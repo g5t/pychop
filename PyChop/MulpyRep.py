@@ -11,9 +11,12 @@
 Contains a class to calculate the possible reps, resolution and flux for a direct geometry disk chopper
 spectrometer. Python implementation by D J Voneshen based on the original Matlab program of R I Bewley.
 """
+from typing import Union
 
 import numpy as np
 import copy
+
+from numpy.core._multiarray_umath import ndarray
 
 
 def findLine(chop_times, chopDist, moderator_limits):
@@ -25,6 +28,13 @@ def findLine(chop_times, chopDist, moderator_limits):
     chop_times: a list of the opening and closing times of the chopper within the time frame
     chopDist: a list of the distance from moderator to chopper in meters
     moderator_limits: the earliest and latest times that neutrons can leave the the moderator in microseconds
+
+    returns:
+        the slope and t=0 intercept for any causally consistent bounding neutron paths
+        of the form
+            d(t) = v * t + d(0)
+        as a list of two-element lists with two elements:
+        [ [[v, d(0)]_left, [v, d(0)]_right]_0, [[v, d(0)]_left, [v, d(0)]_right]_1, ... ]
     """
     lines = []
     for i in range(len(chop_times)):
@@ -176,102 +186,110 @@ def calcFlux(Ei, freq1, percent, slot):
     return flux
 
 
-def calcChopTimes(efocus, freq, instrumentpars, chop2Phase=5):
+def calcChopTimes(efocus, frequencies, instrumentpars, independent_phase_or_slot_string=5):
     """
-    A method to calculate the various possible incident energies with a given chopper setup on LET.
-    The window of energy transfers plotted is 85% by default.
-    efocus: The incident enrgy that all choppers are focussed on
-    freq1: The frequency of the resolution choppers
-    freqpr: frequency of the pulse removal chopper
+    A method to calculate the various possible incident energies with a given chopper setup on a multi-chopper
+    instrument like LET.
+    efocus: The incident energy that all choppers are focussed on
+    frequencies: The rotation frequency of each chopper
     instrumentpars: a list of instrument parameters [see Instruments.py]
-    chop2Phase: the second choppers phase, adjustable to take the guessing out
+    independent_phase_or_slot_string: the phase(s) of any choppers which are *not* focused on the provided energy
+                                      or a string representing the integer number of the slot to use
 
     Original Matlab code R. Bewley STFC
     Rewritten in Python, D Voneshen STFC 2015
+    Updated to remove unnecessary code paths, G S Tucker ESS 2021
     """
     # conversion factors
     lam2TOF = 252.7784            # the conversion from wavelength to TOF at 1m, multiply by distance
     uSec = 1e6                    # seconds to microseconds
-    lam = np.sqrt(81.8042/efocus) # convert from energy to wavelenth
+    lam = np.sqrt(81.8042/efocus) # convert from energy to wavelength
 
     # extracts the instrument parameters
-    dist, nslot, slots_ang_pos, slot_width, guide_width, radius, numDisk = tuple(instrumentpars[:7])
-    samp_det, chop_samp, rep, tmod, frac_ei, ph_ind_v = tuple(instrumentpars[7:])
+    distance_per_chopper, n_slots_per_chopper, slot_angle_centers_per_chopper = tuple(instrumentpars[:3])
+    # slot_width, guide_width, radius, numDisk, samp_det = tuple(instrumentpars[3:8])
+    chop_samp, rep_pack, latest_moderator_emission_time = tuple(instrumentpars[8:11])
+    # frac_ei = instrumentpars[11]
+    independent_choppers = instrumentpars[12]
 
-    chop_times = []             # empty list to hold each chopper opening period
+    all_chopper_times = [[] for _ in distance_per_chopper] # *unique* empty lists to hold each chopper opening period
 
-    # figures out phase information
-    if not hasattr(ph_ind_v, '__len__'):
-        ph_ind_v = [ph_ind_v]
-    ph_ind = np.array([False] * len(dist))
-    if not len(ph_ind_v) == len(dist) and ph_ind_v:
-        ph_ind[ph_ind_v] = True
-        chop2Phase = phase = chop2Phase if hasattr(chop2Phase, '__len__') else [chop2Phase]
-        if len(chop2Phase) != len(dist):
-            if len(chop2Phase) == len(ph_ind_v):
-                phase = [False] * len(dist)
-                for i in range(len(ph_ind_v)):
-                    phase[ph_ind_v[i]] = chop2Phase[i]
-            else:
-                phase = [chop2Phase[-1] if ph_ind[i] else False for i in range(len(dist))]
+    # Ensure provided independent chopper index(es) match the number of independent phase/slot information
+    if not hasattr(independent_choppers, '__len__'):
+        independent_choppers = [independent_choppers]
+    if not hasattr(independent_phase_or_slot_string, '__len__'):
+        independent_phase_or_slot_string = [independent_phase_or_slot_string]
+    if not len(independent_phase_or_slot_string) == len(independent_choppers):
+        raise RuntimeError('The number of independent chopper indices and their phase/slot information must match!')
+    # separate the passed commingled information into independent phase or selected slot information:
+    chopper_phase = np.full(len(distance_per_chopper), None)
+    chopper_slot = np.full(len(distance_per_chopper), 0)
+    for i, chopper in enumerate(independent_choppers):
+        if isinstance(independent_phase_or_slot_string[i], str):
+            # *any* string should be an integer to select the slot
+            chopper_slot[chopper] = int(independent_phase_or_slot_string[i]) % n_slots_per_chopper[chopper]
+        else:
+            # otherwise this should be an independent phase (modifier)
+            chopper_phase[chopper] = independent_phase_or_slot_string[i]
 
     # do we want multiple frames?
-    source_rep, nframe = tuple(rep[:2]) if (hasattr(rep, '__len__') and len(rep) > 1) else (rep, 1)
+    source_rep, nframe = tuple(rep_pack[:2]) if (hasattr(rep_pack, '__len__') and len(rep_pack) > 1) else (rep_pack, 1)
     p_frames = source_rep / nframe
+    maximum_t = uSec * nframe / source_rep
 
-    # first we optimise on the main Ei
-    for i in range(len(dist)):
-        # loop over each chopper
-        # checks whether this chopper should have an independently set phase / delay
-        islt = int(phase[i]) if (ph_ind[i] and isinstance(phase[i], str)) else 0
-        if ph_ind[i] and not isinstance(phase[i], str):
-            # effective chopper velocity (if 2 disks effective velocity is double)
-            chopVel = 2*np.pi*radius[i] * numDisk[i] * freq[i]
-            # full opening time
-            t_full_op = uSec * (slot_width[i]+guide_width[i]) / chopVel
-            realTimeOp = np.array([phase[i], phase[i]+t_full_op])
+    # protect against slot_angle_centers_per_chopper being None or [..., None, ...]
+    if not slot_angle_centers_per_chopper:
+        slot_angle_centers_per_chopper = [np.linspace(0, 360*(n-1)/n, n) for n in n_slots_per_chopper]
+    else:
+        for i, n in enumerate(n_slots_per_chopper):
+            if not slot_angle_centers_per_chopper[i]:
+                slot_angle_centers_per_chopper[i] = np.linspace(0, 360*(n-1)/n, n)
+
+    chopper_it = zip(chopper_phase, chopper_slot, frequencies, all_chopper_times, distance_per_chopper,
+                     slot_angle_centers_per_chopper, *tuple(instrumentpars[3:7]))
+    for phase, slot, frequency, times, distance, slot_centers, slot_width, guide_width, radius, n_disks in chopper_it:
+        # # the slot index for choppers with asymmetric slots (zero by default):
+        # # the int() call converts a string to an integer
+        # slot = int(phase)%n_slots if (is_independent and isinstance(phase, str)) else 0
+        # the effective chopper edge velocity (double disks are effectively twice as fast)
+        edge_velocity = 2*np.pi * radius * n_disks * frequency
+        # the duration over which the chopper is open
+        t_open_close = np.array((0., uSec * (slot_width + guide_width)/edge_velocity))
+        # the time of flight for the specified wavelength to reach this chopper
+        t_focus = lam2TOF * lam * distance
+        if phase:
+            # the specified phase is an absolute microsecond offset from t=0
+            t_open_close += phase
         else:
-            # the opening time of the chopper so that it is open for the focus wavelength
-            t_open = lam2TOF * lam * dist[i]
-            # effective chopper velocity (if 2 disks effective velocity is double)
-            chopVel = 2*np.pi*radius[i] * numDisk[i] * freq[i]
-            # full opening time
-            t_full_op = uSec * (slot_width[i]+guide_width[i]) / chopVel
-            # set the chopper phase to be as close to zero as possible
-            realTimeOp = np.array([(t_open-t_full_op/2.), (t_open+t_full_op/2.)])
-        chop_times.append([])
-        if slots_ang_pos and nslot[i] > 1 and slots_ang_pos[i]:
-            tslots = [(uSec * slots_ang_pos[i][j] / 360. / freq[i]) for j in range(nslot[i])]
-            tslots = [[(t + r * (uSec / freq[i])) - tslots[0] for r in range(int(freq[i] / p_frames))] for t in tslots]
-            realTimeOp -= np.max(tslots[islt % nslot[i]])
-            islt = 0
-            next_win_t = uSec/source_rep + (uSec / freq[i])
-            while realTimeOp[0] < next_win_t:
-                chop_times[i].append(copy.deepcopy(realTimeOp[:]))
-                slt0 = islt % nslot[i]
-                slt1 = (islt + 1) % nslot[i]
-                angdiff = (slots_ang_pos[i][slt1] - slots_ang_pos[i][slt0])
-                if (slt1 - slt0) != 1:
-                    angdiff += 360
-                realTimeOp += (uSec * (angdiff / 360.) / freq[i])
-                islt += 1
-        else:
-            # If angular positions of slots not defined, assumed evenly spaced (LET, MERLIN)
-            next_win_t = uSec / (nslot[i]*freq[i])
-            realTimeOp -= next_win_t * np.ceil(realTimeOp[0]/next_win_t)
-            while realTimeOp[0] < (uSec/p_frames+next_win_t):
-                chop_times[i].append(copy.deepcopy(realTimeOp[:]))
-                realTimeOp += next_win_t
+            # centre the open window on the specified wavelength
+            t_open_close += t_focus - t_open_close[1]/2
+        # the full chopper rotation period:
+        period = uSec/frequency
+        # find the mid-slot position for each slot, in units of rotations
+        rel_pos = np.array(slot_centers) / 360
+        # we start with the selected slot and move a partial rotation between slots:
+        slot_part_rot = (rel_pos - rel_pos[slot]) % 1
+        # make sure we rotate forwards in time far enough to pass t == maximum_t:
+        n_rot_fwd = np.ceil(frequency / p_frames - np.min(slot_part_rot) - np.min(t_open_close)/period)
+        # make sure we rotate backwards in time far enough to pass t == 0:
+        n_rot_bck = np.ceil(np.max(slot_part_rot)+np.max(t_open_close)/period)
+        # collect all slot rotations during the full period
+        all_rot = (np.arange(-n_rot_bck, n_rot_fwd+1)[:, np.newaxis] + slot_part_rot).flatten()
+        # all chopper windows:
+        windows = t_open_close + period * all_rot[:, np.newaxis]
+        # keep only windows which close after the frame starts and open before the full-period ends
+        times[:] = windows[(windows[:, 0] < maximum_t) & (windows[:, 1] > 0)]
     # then we look for what else gets through
     # firstly calculate the bounding box for each window in final chopper
     lines_all = []
     for i in range(nframe):
         t0 = i * uSec / source_rep
-        lines = findLine(chop_times[-1], dist[-1], [t0, t0+tmod])
-        lines = checkPath([np.array(ct)+t0 for ct in chop_times[0:-1]], lines, dist[:-1], dist[-1])
+        lines = findLine(all_chopper_times[-1], distance_per_chopper[-1], [t0, t0+latest_moderator_emission_time])
+        lines = checkPath([np.array(ct)+t0 for ct in all_chopper_times[0:-1]], lines, distance_per_chopper[:-1], distance_per_chopper[-1])
         if lines:
             for line in lines:
                 lines_all.append(line)
+
     # ok, now we know the possible neutron velocities. we now need their energies
-    Ei = calcEnergy(lines_all, (dist[-1]+chop_samp))
-    return Ei, chop_times, [chop_times[0][0], chop_times[-1][0]], dist[-1]-dist[0], lines_all
+    Ei = calcEnergy(lines_all, (distance_per_chopper[-1]+chop_samp))
+    return Ei, all_chopper_times, [all_chopper_times[0][0], all_chopper_times[-1][0]], distance_per_chopper[-1]-distance_per_chopper[0], lines_all
