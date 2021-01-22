@@ -182,7 +182,9 @@ class PyChopGui(QMainWindow):
                 if isinstance(self.engine.chopper_system.defaultPhase[idx], str):
                     phase = str(phase)
                 else:
-                    phase = float(phase) % (1e6 / self.engine.moderator.source_rep)
+                    phase = float(phase)
+                    if phase > 0 :
+                        phase %= (1e6 / self.engine.moderator.source_rep)
                 phases.append(phase)
         if phases:
             self.engine.setFrequency(freq_in, phase=phases)

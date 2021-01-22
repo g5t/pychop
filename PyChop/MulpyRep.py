@@ -257,7 +257,10 @@ def calcChopTimes(efocus, frequencies, instrumentpars, independent_phase_or_slot
         t_open_close = np.array((0., uSec * (slot_width + guide_width)/edge_velocity))
         # the time of flight for the specified wavelength to reach this chopper
         t_focus = lam2TOF * lam * distance
-        if phase:
+        if phase and phase < 0:
+            # the specified phase is a relative offset from the time-of-flight for the specified wavelength
+            t_open_close += t_focus + phase
+        elif phase:
             # the specified phase is an absolute microsecond offset from t=0
             t_open_close += phase
         else:
