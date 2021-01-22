@@ -124,6 +124,8 @@ class ChopperSystem(object):
         self._parse_variants()
         self.phase = self.defaultPhase
         self.frequency = self.default_frequencies
+        self.gain_ei_frac = self.overlap_ei_frac
+        self.loss_ei_frac = self.overlap_ei_frac
 
     def __repr__(self):
         return self.name if self.name else 'Undefined disk chopper system'
@@ -258,7 +260,7 @@ class ChopperSystem(object):
 
     def plotMultiRepFrame(self, h_plt=None, Ei_in=None, frequency=None, first_rep=False):
         """
-        Plots the time-distance diagram into a given Matplotlib axes, i
+        Plots the time-distance diagram into a given Matplotlib axes, h_plt
         for a give focused incident energy (in meV) and chopper frequencies (in Hz).
         """
         if h_plt is None:
@@ -271,51 +273,63 @@ class ChopperSystem(object):
             plt = h_plt
         _check_input(self, Ei_in)
         if frequency:
-            oldfreq = self.freq
+            freq_stash = self.freq
             self.setFrequency(frequency)
-        Eis, _,  _, lines, chop_times = tuple(self._MulpyRepDriver(Ei_in, calc_res=False))
+        eis, _,  _, lines, chop_times = tuple(self._MulpyRepDriver(Ei_in, calc_res=False))
         if frequency:
-            self.setFrequency(oldfreq)
-        modSamDist = self.distance[-1] + self.chop_sam
-        totDist = modSamDist + self.sam_det
-        xmax = 1.e6 / self.source_rep
+            self.setFrequency(freq_stash)
+        d_sample = self.distance[-1] + self.chop_sam
+        d_detector = d_sample + self.sam_det
+        source_period_us = 1.e6/self.source_rep
+        max_time = source_period_us
         if hasattr(self, 'n_frame') and self.n_frame > 1:
-            xmax *= self.n_frame
+            max_time *= self.n_frame
             for i in range(1, self.n_frame):
-                plt.plot([i * 1.e6 / self.source_rep] * 2, [0, totDist], c='k')
-        limits = [-1.e6 / self.source_rep, xmax]
-        for i in range(len(self.distance)):
-            plt.plot(limits, [self.distance[i], self.distance[i]], c='k', linewidth=1.)
-            for j in range(len(chop_times[i][:])):
-                plt.plot(chop_times[i][j], [self.distance[i], self.distance[i]], c='white', linewidth=1.)
-        plt.plot(limits, [totDist, totDist], c='k', linewidth=2.)
-        for i in range(len(lines)):
-            x0 = (-lines[i][0][1] / lines[i][0][0] - lines[i][1][1] / lines[i][1][0]) / 2.
-            x1 = ((modSamDist-lines[i][0][1]) / lines[i][0][0] + (modSamDist-lines[i][1][1]) / lines[i][1][0]) / 2.
-            if (np.abs(x0) > 500):
-                if first_rep:
-                    continue
-                maincolor = 'm'
-            else:
-                maincolor = 'b'
-            plt.plot([x0, x1], [0, modSamDist], c=maincolor)
-            x2 = ((totDist-lines[i][0][1]) / lines[i][0][0] + (totDist-lines[i][1][1]) / lines[i][1][0]) / 2.
-            lineM = totDist / (x2 - x0)
-            plt.plot([x1, x2], [modSamDist, totDist], c=maincolor)
-            newline = [lineM * np.sqrt(1 + self.overlap_ei_frac), modSamDist - lineM * np.sqrt(1 + self.overlap_ei_frac) * x1]
-            x3 = (totDist-newline[1]) / (newline[0])
-            plt.plot([x1, x3], [modSamDist, totDist], c='r')
-            newline = [lineM * np.sqrt(1 - self.overlap_ei_frac), modSamDist - lineM * np.sqrt(1 - self.overlap_ei_frac) * x1]
-            x4 = (totDist-newline[1]) / (newline[0])
-            plt.plot([x1, x4], [modSamDist, totDist], c='r')
-            plt.text(x2, totDist+0.2, "{:3.1f}".format(Eis[i]))
+                plt.plot([i * source_period_us] * 2, [0, d_detector], color='gray', linewidth=2.)
+        t_range = [-source_period_us, max_time]
+        # plot the chopper blocked (black) and open (white) times
+        for t_chopper_windows, d_chopper in zip(chop_times, self.distance):
+            plt.plot(t_range, [d_chopper]*2, color='black', linewidth=1.)
+            for t_open_close in t_chopper_windows:
+                plt.plot(t_open_close, [d_chopper]*2, color='white', linewidth=1.)
+        for ei, line in zip(eis, lines):
+            # the time at which this neutron path leaves the moderator:
+            t_moderator = (-line[0][1]/line[0][0] - line[1][1]/line[1][0])/2.0
+            if np.abs(t_moderator) > self.emission_time and first_rep:
+                continue
+            # the time at which this neutron path arrives at the sample:
+            t_sample = ((d_sample-line[0][1])/line[0][0] + (d_sample-line[1][1])/line[1][0])/2.0
+            # the time at which this neutron path arrives at the detector bank
+            t_detector = ((d_detector - line[0][1])/line[0][0] + (d_detector-line[1][1])/line[1][0])/2.0
+            # the slope (speed) of the full moderator to detector path
+            path_vel = d_detector/(t_detector-t_moderator)
+            gain_vel = path_vel * np.sqrt(1 + self.gain_ei_frac)
+            loss_vel = path_vel * np.sqrt(1 - self.loss_ei_frac)
+            # time at which the energy gain neutron path arrives at the detector bank:
+            t_detector_gain = (d_detector-d_sample)/gain_vel + t_sample
+            # time at which the energy loss neutron path arrives at the detector bank:
+            t_detector_loss = (d_detector-d_sample)/loss_vel + t_sample
+            # pick the plotting color for the elastic line:
+            main_color = 'm' if np.abs(t_moderator) > self.emission_time else 'b'
+            # draw the line from the moderator to the sample:
+            plt.plot([t_moderator, t_sample], [0, d_sample], color=main_color)
+            # and its continuation to the detector bank
+            plt.plot([t_sample, t_detector], [d_sample, d_detector], color=main_color)
+            # draw the energy-gain (Ef > Ei -> E < 0) path
+            plt.plot([t_sample, t_detector_gain], [d_sample, d_detector], color='r')
+            # draw the energy-loss (Ef < Ei -> E > 0) path
+            plt.plot([t_sample, t_detector_loss], [d_sample, d_detector], color='r')
+            # indicate the incident energy on the plot above the detector line:
+            plt.text(t_detector, d_detector+0.2, '{:3.1f}'.format(ei))
+        # plot the detector
+        plt.plot(t_range, [d_detector, d_detector], color='black')
         if h_plt is None:
-            plt.xlim(0, xmax)
+            plt.xlim(0, max_time)
             plt.xlabel(r'TOF ($\mu$sec)')
             plt.ylabel('Distance (m)')
             plt.show()
         else:
-            plt.set_xlim(0, xmax)
+            plt.set_xlim(0, max_time)
             plt.set_xlabel(r'TOF ($\mu$sec)')
             plt.set_ylabel(r'Distance (m)')
 
@@ -425,6 +439,22 @@ class ChopperSystem(object):
         if not hasattr(value, '__len__'):
             value = [value]
         self._phase = [value[i] if i < len(value) else phase[i] for i in range(len(phase))]
+
+    @property
+    def gain_ei_frac(self):
+        return self._gain_ei_frac
+
+    @gain_ei_frac.setter
+    def gain_ei_frac(self, value):
+        self._gain_ei_frac = np.abs(float(value[0])) if hasattr(value, '__len__') else float(value)
+
+    @property
+    def loss_ei_frac(self):
+        return self._loss_ei_frac
+
+    @loss_ei_frac.setter
+    def loss_ei_frac(self, value):
+        self._loss_ei_frac = np.abs(float(value[1])) if hasattr(value, '__len__') else float(value)
 
     @property
     def ei(self):
