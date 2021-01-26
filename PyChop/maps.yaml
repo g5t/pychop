@@ -20,7 +20,7 @@ chopper_system:
       slot_ang_pos: [-180., -39.1, 0., 39.1]
       radius: 375               # Disk radius
       isDouble: False           # Is this a double disk system?
-      isPhaseIndependent: True  # Is this disk to be phased independently?
+      isPhaseIndependent: False # Is this disk to be phased independently?
       defaultPhase: "1"         # What is the default phase for this disk (either a time in microseconds
                                 #   or a slot index [as a string] for the desired rep to go through)
       phaseName: 'Multirep mode number'

@@ -117,27 +117,25 @@ class PyChopGui(QMainWindow):
             self.widgets['MultiRepCheck'].setEnabled(False)
             self.widgets['MultiRepCheck'].setChecked(False)
         self._hide_phases()
-        if self.engine.chopper_system.isPhaseIndependent:
-            for idx in range(len(self.engine.chopper_system.isPhaseIndependent)):
-                if idx > self.n_indep_phase:
-                    chopper_number = self.engine.chopper_system.isPhaseIndependent[idx]
-                    phase_label = QLabel("")
-                    phase_edit = QLineEdit(self)
-                    phase_edit.returnPressed.connect(self.setFreq)
-                    self.leftPanel.insertWidget(self.phase_index, phase_edit)
-                    self.leftPanel.insertWidget(self.phase_index, phase_label)
-                    self.widgets[f"Chopper{idx}Phase"] = {'Edit':phase_edit, 'Label':phase_label}
-                    self.n_indep_phase += 1
-                    self.phase_index += 2
-                else:
-                    self.widgets[f"Chopper{idx}Phase"]['Edit'].show()
-                    self.widgets[f"Chopper{idx}Phase"]['Label'].show()
-                self.widgets[f"Chopper{idx}Phase"]['Edit'].setText(str(self.engine.chopper_system.defaultPhase[idx]))
-                self.widgets[f"Chopper{idx}Phase"]['Label'].setText(self.engine.chopper_system.phaseNames[idx])
-            # Special case for MERLIN - hide phase control from normal users
-            if 'MERLIN' in str(instname) and not self.instSciAct.isChecked():
-                self.widgets['Chopper0Phase']['Edit'].hide()
-                self.widgets['Chopper0Phase']['Label'].hide()
+        for idx, isIndependent in enumerate(self.engine.chopper_system.isPhaseIndependent):
+            if self.engine.chopper_system.defaultPhase[idx]:
+                # defaultPhase was defined in the yaml file, otherwise it would be None
+                chopper_key = 'Chopper{}Phase'.format(idx)
+                phase_label = QLabel("")
+                phase_edit = QLineEdit(self)
+                phase_edit.returnPressed.connect(self.setFreq)
+                self.leftPanel.insertWidget(self.phase_index, phase_edit)
+                self.leftPanel.insertWidget(self.phase_index, phase_label)
+                self.widgets[chopper_key] = {'Edit': phase_edit, 'Label': phase_label}
+                self.phase_index += 2
+                # the phaseName is correct for whether this is independent or not already:
+                self.widgets[chopper_key]['Edit'].setText(str(self.engine.chopper_system.defaultPhase[idx]))
+                self.widgets[chopper_key]['Label'].setText(self.engine.chopper_system.phaseNames[idx])
+                # Hide relative phases from normal users
+                hide_widget = not (isIndependent or isinstance(self.engine.chopper_system.defaultPhase[idx], str))
+                if not self.instSciAct.isChecked() and (hide_widget or 'MERLIN' in str(instname)):
+                    self.widgets[chopper_key]['Edit'].hide()
+                    self.widgets[chopper_key]['Label'].hide()
         self.engine.setChopper(str(self.widgets['ChopperCombo']['Combo'].currentText()))
         self.engine.setFrequency(float(self.widgets['FrequencyCombo']['Combo'].currentText()))
         val = self.flxslder.val * self.maxE[self.engine.instname] / 100
@@ -183,8 +181,6 @@ class PyChopGui(QMainWindow):
                     phase = str(phase)
                 else:
                     phase = float(phase)
-                    if phase > 0 :
-                        phase %= (1e6 / self.engine.moderator.source_rep)
                 phases.append(phase)
         if phases:
             self.engine.setFrequency(freq_in, phase=phases)
@@ -768,7 +764,7 @@ class PyChopGui(QMainWindow):
         self.rightPanel = QVBoxLayout()
         self.tabs = QTabWidget(self)
         self.fullWindow = QGridLayout()
-        self.n_indep_phase = -1
+        # self.n_indep_phase = -1
         idx = 0
         for widget in self.widgetslist:
             if widget[-1] == 'Chopper2Phase':

@@ -165,15 +165,13 @@ class ChopperSystem(object):
                 self.guide_width.append(chopper['guide_width'])
                 self.radius.append(chopper['radius'])
                 self.numDisk.append(2 if ('isDouble' in chopper and chopper['isDouble']) else 1)
-                self.isPhaseIndependent.append(
-                    True if ('isPhaseIndependent' in chopper and chopper['isPhaseIndependent']) else False)
-                self.defaultPhase.append(chopper['defaultPhase'] if 'defaultPhase' in chopper else None)
-                self.phaseNames.append(chopper['phaseName'] if 'phaseName' in chopper else 'Chopper %d phase delay time' % (idx))
+            self.isPhaseIndependent.append(
+                True if ('isPhaseIndependent' in chopper and chopper['isPhaseIndependent']) else False)
+            self.defaultPhase.append(chopper['defaultPhase'] if 'defaultPhase' in chopper else None)
+            pn = 'Chopper {:d} {:s} delay time'.format(idx, 'phase' if self.isPhaseIndependent[-1] else 'phase offset')
+            self.phaseNames.append(chopper['phaseName'] if 'phaseName' in chopper else pn)
         if not any(self.slot_ang_pos):
             self.slot_ang_pos = None
-        self.isPhaseIndependent = [ii for ii in range(len(self.isPhaseIndependent)) if self.isPhaseIndependent[ii]]
-        self.defaultPhase = [self.defaultPhase[ii] for ii in self.isPhaseIndependent]
-        self.phaseNames = [self.phaseNames[ii] for ii in self.isPhaseIndependent]
         source_rep = self.source_rep if (not hasattr(self, 'n_frame') or self.n_frame == 1) else [self.source_rep, self.n_frame]
         self._instpar = [self.distance, self.nslot, self.slot_ang_pos, self.slot_width, self.guide_width, self.radius,
                          self.numDisk, self.sam_det, self.chop_sam, source_rep, self.emission_time,
@@ -243,6 +241,7 @@ class ChopperSystem(object):
         if argdict['freq']:
             self.frequency = argdict['freq']
         if argdict['phase']:
+            # this sets only the phases visible in the GUI!
             self.phase = argdict['phase']
 
     def getFrequency(self):
@@ -434,11 +433,23 @@ class ChopperSystem(object):
         return self._phase
 
     @phase.setter
-    def phase(self, value):
-        phase = self.defaultPhase
-        if not hasattr(value, '__len__'):
-            value = [value]
-        self._phase = [value[i] if i < len(value) else phase[i] for i in range(len(phase))]
+    def phase(self, values):
+        phase = copy.deepcopy(self.defaultPhase)
+        if not hasattr(values, '__len__'):
+            values = [values]
+        # only the independent or semi-automatic chopper phases should be updated, so None values should not be replaced
+        if len(phase) == len(values):
+            # *something* has been specified for every chopper
+            phase = [v if p else p for v, p in zip(values, phase)]
+        else:
+            # (probably) only the independent and/or semi-automatic choppers phases have been specified
+            ind_or_semi = [i for i, p in enumerate(phase) if p]
+            if len(values) != len(ind_or_semi):
+                raise RuntimeError('Unexpected number of phases provided to setter')
+            for index, value in zip(ind_or_semi, values):
+                phase[index] = value
+        self._phase = phase
+        #self._phase = [value[i] if i < len(value) else phase[i] for i in range(len(phase))]
 
     @property
     def gain_ei_frac(self):

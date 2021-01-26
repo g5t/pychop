@@ -186,15 +186,15 @@ def calcFlux(Ei, freq1, percent, slot):
     return flux
 
 
-def calcChopTimes(efocus, frequencies, instrumentpars, independent_phase_or_slot_string=5):
+def calcChopTimes(efocus, frequencies, instrumentpars, phase_slot_none):
     """
     A method to calculate the various possible incident energies with a given chopper setup on a multi-chopper
     instrument like LET.
     efocus: The incident energy that all choppers are focussed on
     frequencies: The rotation frequency of each chopper
     instrumentpars: a list of instrument parameters [see Instruments.py]
-    independent_phase_or_slot_string: the phase(s) of any choppers which are *not* focused on the provided energy
-                                      or a string representing the integer number of the slot to use
+    phase_slot_none: for every chopper one of {phase: float, slot: string, none: None} representing the phase offset,
+                     the slot number to pass through, or neither for each chopper.
 
     Original Matlab code R. Bewley STFC
     Rewritten in Python, D Voneshen STFC 2015
@@ -210,27 +210,28 @@ def calcChopTimes(efocus, frequencies, instrumentpars, independent_phase_or_slot
     # slot_width, guide_width, radius, numDisk, samp_det = tuple(instrumentpars[3:8])
     chop_samp, rep_pack, latest_moderator_emission_time = tuple(instrumentpars[8:11])
     # frac_ei = instrumentpars[11]
-    independent_choppers = instrumentpars[12]
+    chopper_is_independent = instrumentpars[12]
 
     all_chopper_times = [[] for _ in distance_per_chopper] # *unique* empty lists to hold each chopper opening period
+    n_choppers = len(distance_per_chopper)
 
     # Ensure provided independent chopper index(es) match the number of independent phase/slot information
-    if not hasattr(independent_choppers, '__len__'):
-        independent_choppers = [independent_choppers]
-    if not hasattr(independent_phase_or_slot_string, '__len__'):
-        independent_phase_or_slot_string = [independent_phase_or_slot_string]
-    if not len(independent_phase_or_slot_string) == len(independent_choppers):
-        raise RuntimeError('The number of independent chopper indices and their phase/slot information must match!')
+    if not hasattr(chopper_is_independent, '__len__'):
+        chopper_is_independent = [chopper_is_independent]
+    if not hasattr(phase_slot_none, '__len__'):
+        phase_slot_none = [phase_slot_none]
+    if not (len(phase_slot_none) == n_choppers and len(chopper_is_independent) == n_choppers):
+        raise RuntimeError('The independent chopper and phase/slot information must match the number of choppers!')
     # separate the passed commingled information into independent phase or selected slot information:
-    chopper_phase = np.full(len(distance_per_chopper), None)
-    chopper_slot = np.full(len(distance_per_chopper), 0)
-    for i, chopper in enumerate(independent_choppers):
-        if isinstance(independent_phase_or_slot_string[i], str):
+    chopper_phase = np.full(n_choppers, 0.)
+    chopper_slot = np.full(n_choppers, 0)
+    for i, psn in enumerate(phase_slot_none):
+        if isinstance(psn, str):
             # *any* string should be an integer to select the slot
-            chopper_slot[chopper] = int(independent_phase_or_slot_string[i]) % n_slots_per_chopper[chopper]
-        else:
-            # otherwise this should be an independent phase (modifier)
-            chopper_phase[chopper] = independent_phase_or_slot_string[i]
+            chopper_slot[i] = int(phase_slot_none[i]) % n_slots_per_chopper[i]
+        elif psn:
+            # otherwise, non-None values are phases
+            chopper_phase[i] = psn
 
     # do we want multiple frames?
     source_rep, nframe = tuple(rep_pack[:2]) if (hasattr(rep_pack, '__len__') and len(rep_pack) > 1) else (rep_pack, 1)
@@ -245,9 +246,9 @@ def calcChopTimes(efocus, frequencies, instrumentpars, independent_phase_or_slot
             if not slot_angle_centers_per_chopper[i]:
                 slot_angle_centers_per_chopper[i] = np.linspace(0, 360*(n-1)/n, n)
 
-    chopper_it = zip(chopper_phase, chopper_slot, frequencies, all_chopper_times, distance_per_chopper,
+    chopper_it = zip(chopper_is_independent, chopper_phase, chopper_slot, frequencies, all_chopper_times, distance_per_chopper,
                      slot_angle_centers_per_chopper, *tuple(instrumentpars[3:7]))
-    for phase, slot, frequency, times, distance, slot_centers, slot_width, guide_width, radius, n_disks in chopper_it:
+    for indep, phase, slot, frequency, times, distance, slot_centers, slot_width, guide_width, radius, n_disks in chopper_it:
         # # the slot index for choppers with asymmetric slots (zero by default):
         # # the int() call converts a string to an integer
         # slot = int(phase)%n_slots if (is_independent and isinstance(phase, str)) else 0
@@ -255,17 +256,11 @@ def calcChopTimes(efocus, frequencies, instrumentpars, independent_phase_or_slot
         edge_velocity = 2*np.pi * radius * n_disks * frequency
         # the duration over which the chopper is open
         t_open_close = np.array((0., uSec * (slot_width + guide_width)/edge_velocity))
-        # the time of flight for the specified wavelength to reach this chopper
-        t_focus = lam2TOF * lam * distance
-        if phase and phase < 0:
-            # the specified phase is a relative offset from the time-of-flight for the specified wavelength
-            t_open_close += t_focus + phase
-        elif phase:
-            # the specified phase is an absolute microsecond offset from t=0
-            t_open_close += phase
-        else:
-            # centre the open window on the specified wavelength
-            t_open_close += t_focus - t_open_close[1]/2
+        # If this chopper is independent, the phase is relative to t=0. Otherwise it is relative to the chopper
+        # midpoint at the time-of-flight for the focus wavelength arriving at the chopper
+        t_reference = 0. if indep else (lam2TOF * lam * distance - t_open_close[1]/2)
+        # we then adjust the opening and closing time of the chopper by the reference time and the desired phase
+        t_open_close += t_reference + phase
         # the full chopper rotation period:
         period = uSec/frequency
         # find the mid-slot position for each slot, in units of rotations

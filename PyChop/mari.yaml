@@ -20,7 +20,7 @@ chopper_system:
       slot_ang_pos: [0, 36.48, 72.76, 145.52]
       radius: 367               # Disk radius
       isDouble: False           # Is this a double disk system?
-      isPhaseIndependent: True  # Is this disk to be phased independently?
+      isPhaseIndependent: False # Is this disk to be phased independently?
       defaultPhase: "0"         # What is the default phase for this disk (either a time in microseconds
                                 #   or a slot index [as a string] for the desired rep to go through)
       phaseName: 'Disk chopper slot index'
