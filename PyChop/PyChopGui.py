@@ -24,7 +24,7 @@ from .Instruments import Instrument
 from qtpy.QtCore import (QEventLoop, Qt)  # noqa
 from qtpy.QtWidgets import (QAction, QCheckBox, QComboBox, QDialog, QFileDialog, QGridLayout, QHBoxLayout, QMenu, QLabel,
                             QLineEdit, QMainWindow, QMessageBox, QPushButton, QSizePolicy, QSpacerItem, QTabWidget,
-                            QTextEdit, QVBoxLayout, QWidget)  # noqa
+                            QTextEdit, QVBoxLayout, QWidget, QSpinBox)  # noqa
 import matplotlib
 from matplotlib.figure import Figure
 from matplotlib.widgets import Slider
@@ -117,9 +117,9 @@ class PyChopGui(QMainWindow):
             self.widgets['MultiRepCheck'].setEnabled(False)
             self.widgets['MultiRepCheck'].setChecked(False)
         self._hide_phases()
-        for idx, isIndependent in enumerate(self.engine.chopper_system.isPhaseIndependent):
-            if self.engine.chopper_system.defaultPhase[idx]:
-                # defaultPhase was defined in the yaml file, otherwise it would be None
+        for idx, phase_to in enumerate(self.engine.chopper_system.phase_to):
+            if self.engine.chopper_system.phase_shift[idx]:
+                # phase_shift was defined in the yaml file, otherwise it would be None
                 chopper_key = 'Chopper{}Phase'.format(idx)
                 phase_label = QLabel("")
                 phase_edit = QLineEdit(self)
@@ -128,14 +128,27 @@ class PyChopGui(QMainWindow):
                 self.leftPanel.insertWidget(self.phase_index, phase_label)
                 self.widgets[chopper_key] = {'Edit': phase_edit, 'Label': phase_label}
                 self.phase_index += 2
-                # the phaseName is correct for whether this is independent or not already:
-                self.widgets[chopper_key]['Edit'].setText(str(self.engine.chopper_system.defaultPhase[idx]))
-                self.widgets[chopper_key]['Label'].setText(self.engine.chopper_system.phaseNames[idx])
-                # Hide relative phases from normal users
-                hide_widget = not (isIndependent or isinstance(self.engine.chopper_system.defaultPhase[idx], str))
-                if not self.instSciAct.isChecked() and (hide_widget or 'MERLIN' in str(instname)):
+                self.widgets[chopper_key]['Edit'].setText(str(self.engine.chopper_system.phase_shift[idx]))
+                self.widgets[chopper_key]['Label'].setText(self.engine.chopper_system.phase_names[idx])
+                # Hide relative phases from normal users (and absolute phases from MERLIN users)
+                if not self.instSciAct.isChecked() and ('source' not in phase_to or 'MERLIN' in str(instname)):
                     self.widgets[chopper_key]['Edit'].hide()
                     self.widgets[chopper_key]['Label'].hide()
+        self._hide_slots()
+        for idx, slot in enumerate(self.engine.chopper_system.phase_slot):
+            if slot is not None:
+                key = 'Chopper{}Slot'.format(idx)
+                slot_label = QLabel("")
+                slot_edit = QSpinBox(self)
+                slot_edit.valueChanged.connect(self.setFreq)
+                self.leftPanel.insertWidget(self.slot_index, slot_edit)
+                self.leftPanel.insertWidget(self.slot_index, slot_label)
+                self.widgets[key] = {'Edit': slot_edit, 'Label': slot_label}
+                self.slot_index += 2
+                self.widgets[key]['Edit'].setMinimum(0)
+                self.widgets[key]['Edit'].setMaximum(self.engine.chopper_system.nslot[idx]-1)
+                self.widgets[key]['Edit'].setValue(self.engine.chopper_system.phase_slot[idx])
+                self.widgets[key]['Label'].setText(self.engine.chopper_system.slot_names[idx])
         self.engine.setChopper(str(self.widgets['ChopperCombo']['Combo'].currentText()))
         self.engine.setFrequency(float(self.widgets['FrequencyCombo']['Combo'].currentText()))
         val = self.flxslder.val * self.maxE[self.engine.instname] / 100
@@ -171,24 +184,26 @@ class PyChopGui(QMainWindow):
         if len(self.engine.getFrequency()) > 1 and (not hasattr(freq_in, '__len__') or len(freq_in)==1):
             freqpr = float(self.widgets['PulseRemoverCombo']['Combo'].currentText())
             freq_in = [freq_in, freqpr]
-        # Checks for independent phases
-        phases = []
+        # Checks for GUI set phases and slots
+        combined = {'phase': [], 'slot': []}
         for key, widget in self.widgets.items():
-            if key.endswith('Phase') and not widget['Label'].isHidden():
+            if key.endswith(('Phase', 'Slot')) and not widget['Label'].isHidden():
                 idx = int(key[7])
-                phase = widget['Edit'].text()
-                if isinstance(self.engine.chopper_system.defaultPhase[idx], str):
-                    phase = str(phase)
-                else:
-                    phase = float(phase)
-                phases.append(phase)
-        if phases:
-            self.engine.setFrequency(freq_in, phase=phases)
-        else:
-            self.engine.setFrequency(freq_in)
+                if key.endswith('Phase'):
+                    combined['phase'].append(float(widget['Edit'].text()))
+                elif key.endswith('Slot'):
+                    combined['slot'].append(int(widget['Edit'].text()))
+        # remove any keys with empty values
+        combined = {k: v for k, v in combined.items() if v}
+        self.engine.setFrequency(freq_in, **combined)
 
     def _hide_phases(self):
         for widget in [wdg for key, wdg in self.widgets.items() if key.endswith('Phase')]:
+            widget['Edit'].hide()
+            widget['Label'].hide()
+
+    def _hide_slots(self):
+        for widget in [wdg for key, wdg in self.widgets.items() if key.endswith('Slot')]:
             widget['Edit'].hide()
             widget['Label'].hide()
 
@@ -746,7 +761,8 @@ class PyChopGui(QMainWindow):
             ['pair', 'show', 'Frequency', 'combo', '', self.setFreq, 'FrequencyCombo'],
             ['pair', 'hide', 'Pulse remover chopper freq', 'combo', '', self.setFreq, 'PulseRemoverCombo'],
             ['pair', 'show', 'Ei', 'edit', '', self.setEi, 'EiEdit'],
-            ['pair', 'hide', 'Chopper 2 phase delay time', 'edit', '5', self.setFreq, 'Chopper2Phase'],
+            ['pair', 'hide', 'Chopper phase delay time', 'edit', 'inf', self.setFreq, 'ChopperPhase'],
+            ['pair', 'hide', 'Chopper slot index', 'edit', 'inf', self.setFreq, 'ChopperSlot'],
             ['spacer'],
             ['single', 'show', 'Calculate and Plot', 'button', self.calc_callback, 'CalculateButton'],
             ['single', 'show', 'Hold current plot', 'check', lambda: None, 'HoldCheck'],
@@ -767,8 +783,11 @@ class PyChopGui(QMainWindow):
         # self.n_indep_phase = -1
         idx = 0
         for widget in self.widgetslist:
-            if widget[-1] == 'Chopper2Phase':
+            if widget[-1].endswith('Phase'):
                 self.phase_index = idx
+                continue
+            if widget[-1].endswith('Slot'):
+                self.slot_index = idx
                 continue
             if 'pair' in widget[0]:
                 self.droplabels.append(QLabel(widget[2]))

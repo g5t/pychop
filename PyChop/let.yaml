@@ -15,7 +15,7 @@ chopper_system:
       nslot: 6                  # Number of slots. (Assume all slots equally spaced)
       radius: 290               # Disk radius
       isDouble: True            # Is this a double disk system?
-      isPhaseIndependent: False # Is this disk to be phased independently?
+      phase_to: Ei              # Phase this chopper to the target incident energy
     -
       name: LET Disk 2 Frame Overlap
       distance: 8.4             # Distance from moderator to this chopper in metres
@@ -24,10 +24,9 @@ chopper_system:
       nslot: 1                  # Number of slots. (Assume all slots equally spaced)
       radius: 545               # Disk radius
       isDouble: False           # Is this a double disk system?
-      isPhaseIndependent: True  # Is this disk to be phased independently?
-      defaultPhase: 5           # What is the default phase for this disk (either a time in microseconds
-                                #   or a slot index for the desired rep to go through).
-      phaseName: 'Chopper 2 phase delay time'
+      phase_to: Source          # Phase this chopper to the source pulse
+      phase_shift: 5            # with a relative phase offset (time in microseconds)
+      phase_shift_name: 'Chopper 2 phase delay time'
     -
       name: LET Disk 3 Pulse Remover
       distance: 11.75           # Distance from moderator to this chopper in metres
@@ -36,7 +35,7 @@ chopper_system:
       nslot: 2                  # Number of slots. (Assume all slots equally spaced)
       radius: 290               # Disk radius
       isDouble: False           # Is this a double disk system?
-      isPhaseIndependent: False # Is this disk to be phased independently?
+      phase_to: Ei              # Phase this chopper to the target incident energy
     -
       name: LET Disk 4 Contamination Remover
       distance: 15.66           # Distance from moderator to this chopper in metres
@@ -45,7 +44,7 @@ chopper_system:
       nslot: 6                  # Number of slots. (Assume all slots equally spaced)
       radius: 290               # Disk radius
       isDouble: False           # Is this a double disk system?
-      isPhaseIndependent: False # Is this disk to be phased independently?
+      phase_to: Ei              # Phase this chopper to the target incident energy
     -
       name: LET Disk 5 Resolution
       distance: 23.5            # Distance from moderator to this chopper in metres
@@ -54,7 +53,7 @@ chopper_system:
       nslot: 2                  # Number of slots. (Assume all slots equally spaced)
       radius: 290               # Disk radius
       isDouble: True            # Is this a double disk system?
-      isPhaseIndependent: False # Is this disk to be phased independently?
+      phase_to: Ei              # Phase this chopper to the target incident energy
   # Now define how the frequencies of the choppers should be related
   # This is an NxM matrix A where N is the number of choppers and M is the number of indepdent frequencies
   # Such that A.F will give the N required frequencies for each chopper from the M input frequencies

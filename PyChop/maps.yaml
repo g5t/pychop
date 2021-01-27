@@ -20,10 +20,9 @@ chopper_system:
       slot_ang_pos: [-180., -39.1, 0., 39.1]
       radius: 375               # Disk radius
       isDouble: False           # Is this a double disk system?
-      isPhaseIndependent: False # Is this disk to be phased independently?
-      defaultPhase: "1"         # What is the default phase for this disk (either a time in microseconds
-                                #   or a slot index [as a string] for the desired rep to go through)
-      phaseName: 'Multirep mode number'
+      phase_to: Ei              # Phase this chopper to the target incident energy
+      phase_slot: 1             # The slot index for the target incident energy to pass through
+      phase_slot_name: 'Multirep mode number'
     -
       name: MAPS Fermi
       distance: 10.143          # Distance from moderator to this chopper in metres

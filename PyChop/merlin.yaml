@@ -19,10 +19,9 @@ chopper_system:
                                 #   in which case it will be assumed that the slits are equally spaced.
       radius: 250               # Disk radius
       isDouble: False           # Is this a double disk system?
-      isPhaseIndependent: True  # Is this disk to be phased independently?
-      defaultPhase: 1500        # What is the default phase for this disk (either a time in microseconds
-                                #   or a slot index [as a string] for the desired rep to go through)
-      phaseName: 'Disk chopper phase delay time'
+      phase_to: Source          # Phase this chopper to the source pulse
+      phase_shift: 1500         # with a relative phase offset (time in microseconds)
+      phase_shift_name: 'Disk chopper phase delay time'
     -
       name: MERLIN Fermi
       distance: 9.995            # Distance from moderator to this chopper in metres

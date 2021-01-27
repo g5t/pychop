@@ -35,13 +35,19 @@ def wrap_attributes(obj, inval, allowed_var_names):
                 setattr(obj, key, inval[key])
 
 
-def argparser(args, kwargs, argnames, defaults=None):
-    argdict = {key: val for key, val in zip(argnames, defaults if defaults else [None] * len(argnames))}
+def arg_parser(args, kwargs, arg_names, defaults=None):
+    """Parse positional and keyword arguments into a single dictionary
+
+    The number of positional arguments (provided as a packed tuple in the first argument) must not exceed the number of
+    'arg_names' dictionary keys.
+    Optional default values for any 'arg_names' keys can be provided.
+    """
+    arg_dict = {key: val for key, val in zip(arg_names, defaults if defaults else [None] * len(arg_names))}
     for key in kwargs:
-        argdict[key] = kwargs[key]
+        arg_dict[key] = kwargs[key]
     for idx in range(len(args)):
-        argdict[argnames[idx]] = args[idx]
-    return argdict
+        arg_dict[arg_names[idx]] = args[idx]
+    return arg_dict
 
 
 def _check_input(self, *args):
@@ -122,7 +128,8 @@ class ChopperSystem(object):
         wrap_attributes(self, inval, self.__allowed_var_names)
         self._parse_choppers()
         self._parse_variants()
-        self.phase = self.defaultPhase
+        self.phase = self.phase_shift
+        self.slot = self.phase_slot
         self.frequency = self.default_frequencies
         self.gain_ei_frac = self.overlap_ei_frac
         self.loss_ei_frac = self.overlap_ei_frac
@@ -142,9 +149,11 @@ class ChopperSystem(object):
         self.radius = []
         self.numDisk = []
         self.isFermi = False
-        self.isPhaseIndependent = []
-        self.defaultPhase = []
-        self.phaseNames = []
+        self.phase_to = []
+        self.phase_shift = []
+        self.phase_names = []
+        self.phase_slot = []
+        self.slot_names = []
         for idx, chopper in enumerate(self.choppers):
             self.distance.append(chopper['distance'])
             if 'packages' in chopper:
@@ -158,24 +167,25 @@ class ChopperSystem(object):
                 self.radius.append(290.)
                 self.numDisk.append(1)
             else:
-                self.nslot.append(
-                    chopper['nslot'] if ('nslot' in chopper and chopper['nslot']) else len(chopper['slot_ang_pos']))
-                self.slot_ang_pos.append(chopper['slot_ang_pos'] if ('slot_ang_pos' in chopper) else None)
+                self.nslot.append(chopper.get('nslot', len(chopper.get('slot_ang_pos', [0, ]))))
+                self.slot_ang_pos.append(chopper.get('slot_ang_pos', None))
                 self.slot_width.append(chopper['slot_width'])
                 self.guide_width.append(chopper['guide_width'])
                 self.radius.append(chopper['radius'])
-                self.numDisk.append(2 if ('isDouble' in chopper and chopper['isDouble']) else 1)
-            self.isPhaseIndependent.append(
-                True if ('isPhaseIndependent' in chopper and chopper['isPhaseIndependent']) else False)
-            self.defaultPhase.append(chopper['defaultPhase'] if 'defaultPhase' in chopper else None)
-            pn = 'Chopper {:d} {:s} delay time'.format(idx, 'phase' if self.isPhaseIndependent[-1] else 'phase offset')
-            self.phaseNames.append(chopper['phaseName'] if 'phaseName' in chopper else pn)
+                self.numDisk.append(2 if chopper.get('isDouble', False) else 1)
+            self.phase_to.append(chopper.get('phase_to', 'Ei').lower())
+            self.phase_shift.append(chopper.get('phase_shift', None))
+            self.phase_slot.append(chopper.get('phase_slot', None))
+            slot_label = 'Chopper {:d} {:s}'.format(idx, 'slot index')
+            phase_label = 'Chopper {:d} phase{:s} (µs)'.format(idx, '' if 'source' in self.phase_to[-1] else ' offset')
+            self.phase_names.append(chopper.get('phase_shift_name', phase_label))
+            self.slot_names.append(chopper.get('phase_slot_name', slot_label))
         if not any(self.slot_ang_pos):
             self.slot_ang_pos = None
         source_rep = self.source_rep if (not hasattr(self, 'n_frame') or self.n_frame == 1) else [self.source_rep, self.n_frame]
         self._instpar = [self.distance, self.nslot, self.slot_ang_pos, self.slot_width, self.guide_width, self.radius,
                          self.numDisk, self.sam_det, self.chop_sam, source_rep, self.emission_time,
-                         self.overlap_ei_frac, self.isPhaseIndependent]
+                         self.overlap_ei_frac, self.phase_to]
         if self.isFermi:
             self.package = list(self.packages.keys())[0]
 
@@ -208,7 +218,7 @@ class ChopperSystem(object):
         let.setChopper('High resolution', [280, 140]) # Change to the high resolution variant at 280 Hz
         let.setChopper(variant='High resolution')
         """
-        argdict = argparser(args, kwargs, ['package' if self.isFermi else 'variant', 'freq'])
+        argdict = arg_parser(args, kwargs, ['package' if self.isFermi else 'variant', 'freq'])
         if self.isFermi:
             self.package = argdict['package']
             if hasattr(self, 'variants') and argdict['package'] in self.variants:
@@ -237,12 +247,14 @@ class ChopperSystem(object):
         let.setFrequency([240, 120])                  # Sets resolution chopper to 240Hz, pulse removal to 120Hz
         let.setFrequency([240, 120], phase=-20000)    # Additionally sets the frame overlap phase to -20000us
         """
-        argdict = argparser(args, kwargs, ['freq', 'phase'])
-        if argdict['freq']:
-            self.frequency = argdict['freq']
-        if argdict['phase']:
+        arg_dict = arg_parser(args, kwargs, ['freq', 'phase', 'slot'])
+        if arg_dict['freq']:
+            self.frequency = arg_dict['freq']
+        if arg_dict['phase']:
             # this sets only the phases visible in the GUI!
-            self.phase = argdict['phase']
+            self.phase = arg_dict['phase']
+        if arg_dict['slot']:
+            self.slot = arg_dict['slot']
 
     def getFrequency(self):
         return self.frequency
@@ -370,7 +382,7 @@ class ChopperSystem(object):
         self._instpar[9] = [self.source_rep, value]
 
     def _get_state(self, Ei_in=None):
-        return hash((self.variant, self.package, tuple(self.frequency), tuple(self.phase), Ei_in if Ei_in else self.ei, self.n_frame))
+        return hash((self.variant, self.package, tuple(self.frequency), tuple(self.phase), tuple(self.slot), Ei_in if Ei_in else self.ei, self.n_frame))
 
     def _removeLowIntensityReps(self, Eis, lines, Ei=None):
         # Removes reps with Ei where there are no neutrons
@@ -389,7 +401,7 @@ class ChopperSystem(object):
         """Private method to calculate resolution for given Ei from chopper opening times"""
         Ei = _check_input(self, Ei_in)
         if '_saved_state' not in self.__dict__ or (self._saved_state[0] != self._get_state(Ei)):
-            Eis, all_times, chop_times, lastChopDist, lines = MulpyRep.calcChopTimes(Ei, self._long_frequency, self._instpar, self.phase)
+            Eis, all_times, chop_times, lastChopDist, lines = MulpyRep.calcChopTimes(Ei, self._long_frequency, self._instpar, self.phase, self.slot)
             Eis, lines = self._removeLowIntensityReps(Eis, lines, Ei)
             self._saved_state = [self._get_state(Ei), Eis, chop_times, lastChopDist, lines, all_times]
         else:
@@ -434,22 +446,40 @@ class ChopperSystem(object):
 
     @phase.setter
     def phase(self, values):
-        phase = copy.deepcopy(self.defaultPhase)
+        phase = copy.deepcopy(self.phase_shift)
         if not hasattr(values, '__len__'):
             values = [values]
         # only the independent or semi-automatic chopper phases should be updated, so None values should not be replaced
         if len(phase) == len(values):
             # *something* has been specified for every chopper
-            phase = [v if p else p for v, p in zip(values, phase)]
+            phase = [p if p is None else v for v, p in zip(values, phase)]
         else:
             # (probably) only the independent and/or semi-automatic choppers phases have been specified
-            ind_or_semi = [i for i, p in enumerate(phase) if p]
+            ind_or_semi = [i for i, p in enumerate(phase) if p is not None]
             if len(values) != len(ind_or_semi):
                 raise RuntimeError('Unexpected number of phases provided to setter')
             for index, value in zip(ind_or_semi, values):
                 phase[index] = value
         self._phase = phase
-        #self._phase = [value[i] if i < len(value) else phase[i] for i in range(len(phase))]
+
+    @property
+    def slot(self):
+        return self._slot
+
+    @slot.setter
+    def slot(self, values):
+        slot = copy.deepcopy(self.phase_slot)
+        if not hasattr(values, '__len__'):
+            values = [values]
+        if len(slot) == len(values):
+            slot = [s if s is None else v for v, s in zip(values, slot)]
+        else:
+            changeable = [i for i, s in enumerate(slot) if s is not None]
+            if len(values) != len(changeable):
+                raise RuntimeError('Unexpected number of slots provided to setter')
+            for index, value in zip(changeable, values):
+                slot[index] = value
+        self._slot = slot
 
     @property
     def gain_ei_frac(self):
@@ -942,7 +972,7 @@ class Instrument(object):
         !
         ! The results are returned as tuple: (resolution, flux)
         """
-        argdict = argparser(args, kwargs, ['inst', 'package', 'frequency', 'ei', 'etrans', 'variant'])
+        argdict = arg_parser(args, kwargs, ['inst', 'package', 'frequency', 'ei', 'etrans', 'variant'])
         if argdict['inst'] is None:
             raise RuntimeError('You must specify the instrument name')
         obj = cls(argdict['inst'])
