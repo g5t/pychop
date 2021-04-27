@@ -25,6 +25,182 @@ E2V = np.sqrt((constants.e / 1000) * 2 / constants.neutron_mass) # v = E2V * sqr
 E2L = 1.e23 * constants.h**2 / (2 * constants.m_n * constants.e) # lam = sqrt(E2L / E)  lam in Angst, E in meV
 E2K = constants.e * 2 * constants.m_n / constants.hbar**2 / 1e23 # k = sqrt(E2K * E)    k in 1/Angst, E in meV
 
+def colorline(x, y, z=None, cmap=None, norm=None, linewidth=2, alpha=1.0, ax=None, expand=10):
+    """ https://stackoverflow.com/a/25941474 """
+    import matplotlib.pyplot, matplotlib.collections
+    if cmap is None:
+        cmap = 'inferno'
+    if isinstance(cmap, str):
+        cmap = matplotlib.pyplot.get_cmap(cmap).copy()
+        cmap.set_under('gray')
+        cmap.set_over('white')
+
+    # Default colors equally spaced on [0,1]:
+    if z is None:
+        z = np.linspace(0.0, 1.0, len(x))
+
+    def do_expansion(q, n):
+        return np.concatenate([np.linspace(a, b, n) for a, b in zip(q[:-1], q[1:])])
+
+    if expand and expand > 0:
+        x = do_expansion(x, expand)
+        y = do_expansion(y, expand)
+        z = do_expansion(z, expand)
+
+    if norm is None:
+        norm = matplotlib.pyplot.Normalize(np.min(z[z > 0]), np.max(z[z < np.max(z)]))
+
+    # Special case if a single number:
+    if not hasattr(z, "__iter__"):  # to check for numerical input -- this is a hack
+        z = np.array([z])
+
+    z = np.asarray(z)
+
+    segments = make_segments(x, y)
+    lc = matplotlib.collections.LineCollection(segments, array=z, cmap=cmap, norm=norm, linewidth=linewidth, alpha=alpha)
+
+    if ax is None:
+        ax = matplotlib.pyplot.gca()
+    ax.add_collection(lc)
+
+    return lc
+
+
+def make_segments(x, y):
+    """
+    Create list of line segments from x and y coordinates, in the correct format
+    for LineCollection: an array of the form numlines x (points per line) x 2 (x
+    and y) array
+    """
+    points = np.array([x, y]).T.reshape(-1, 1, 2)
+    segments = np.concatenate([points[:-1], points[1:]], axis=1)
+    return segments
+
+def window_paths(window, sample_distance, detector_distance, gain, loss, max_x):
+    l_n = window[0][1]
+    l_d = window[0][0]
+    r_n = window[1][1]
+    r_d = window[1][0]
+
+    edge_x, edge_y, edge_z, mean_x, mean_y, mean_z, diff_x, diff_y, diff_z = [], [], [], [], [], [], [], [], []
+
+    l_moderator_t = -l_n / l_d
+    r_moderator_t = -r_n / r_d
+    moderator_mean_t = (l_moderator_t + r_moderator_t) / 2.0
+
+    if moderator_mean_t < max_x:
+        l_sample_t = (sample_distance - l_n) / l_d
+        r_sample_t = (sample_distance - r_n) / r_d
+        l_detector_t = (detector_distance - l_n) / l_d
+        r_detector_t = (detector_distance - r_n) / r_d
+
+        sample_mean_t = (l_sample_t + r_sample_t) / 2.0
+        detector_mean_t = (l_detector_t + r_detector_t) / 2.0
+
+        mean_velocity = detector_distance / (detector_mean_t - moderator_mean_t)
+        gain_velocity = mean_velocity * np.sqrt(1 + gain)
+        loss_velocity = mean_velocity * np.sqrt(1 - loss)
+        detector_gain_t = (detector_distance - sample_distance) / gain_velocity + sample_mean_t
+        detector_loss_t = (detector_distance - sample_distance) / loss_velocity + sample_mean_t
+
+        edge_x = [l_detector_t, l_sample_t, l_moderator_t, r_moderator_t, r_sample_t, r_detector_t]
+        edge_y = [detector_distance, sample_distance, 0, 0, sample_distance, detector_distance]
+        edge_z = [mean_velocity] * 6
+        mean_x = [moderator_mean_t, sample_mean_t, detector_mean_t]
+        mean_y = [0, sample_distance, detector_distance]
+        mean_z = [mean_velocity] * 3
+        diff_x = [detector_gain_t, sample_mean_t, sample_mean_t, detector_loss_t]
+        diff_y = [detector_distance, sample_distance, sample_distance, detector_distance]
+        diff_z = [gain_velocity, gain_velocity, loss_velocity, loss_velocity]
+
+    return edge_x, edge_y, edge_z, mean_x, mean_y, mean_z, diff_x, diff_y, diff_z
+
+def join_windows_paths(windows, sample_distance, detector_distance, gain, loss, max_x):
+    edge_x, edge_y, edge_z = [], [], []
+    mean_x, mean_y, mean_z = [], [], []
+    diff_x, diff_y, diff_z = [], [], []
+    avg_x = []
+    first = True
+    for window in windows:
+        e_x, e_y, e_z, m_x, m_y, m_z, d_x, d_y, d_z = window_paths(window, sample_distance, detector_distance, gain, loss, max_x)
+        if len(e_x) > 0 and len(m_x) > 0 and len(d_x) > 0:
+            if not first:
+                # add the end points again with zero z-value
+                edge_x.append(edge_x[len(edge_x)-1])
+                edge_y.append(edge_y[len(edge_y)-1])
+                edge_z.append(0)
+                mean_x.append(mean_x[len(mean_x)-1])
+                mean_y.append(mean_y[len(mean_y)-1])
+                mean_z.append(0)
+                diff_x.append(diff_x[len(diff_x)-1])
+                diff_y.append(diff_y[len(diff_y)-1])
+                diff_z.append(0)
+                # so we can move to the start points with still-zero z-value
+                edge_x.append(e_x[0])
+                edge_y.append(e_y[0])
+                edge_z.append(0)
+                mean_x.append(m_x[0])
+                mean_y.append(m_y[0])
+                mean_z.append(0)
+                diff_x.append(d_x[0])
+                diff_y.append(d_y[0])
+                diff_z.append(0)
+            else:
+                first = False
+            # insert all points and their actual z-values:
+            edge_x[len(edge_x):] = e_x
+            edge_y[len(edge_y):] = e_y
+            edge_z[len(edge_z):] = e_z
+            mean_x[len(edge_x):] = m_x
+            mean_y[len(edge_y):] = m_y
+            mean_z[len(edge_z):] = m_z
+            diff_x[len(edge_x):] = d_x
+            diff_y[len(edge_y):] = d_y
+            diff_z[len(edge_z):] = d_z
+            avg_x.append(m_x[len(m_x)-1])
+        else:
+            avg_x.append(None)
+    return edge_x, edge_y, edge_z, mean_x, mean_y, mean_z, diff_x, diff_y, diff_z, avg_x
+
+def plot_windows(windows, sample_distance, detector_distance, ax=None, gain=0.9, loss=0.9, cmap=None, linewidth=1,
+                 max_x=None):
+    import matplotlib.pyplot
+    if cmap is None:
+        cmap = 'coolwarm'
+    if isinstance(cmap, str):
+        cmap = matplotlib.pyplot.get_cmap(cmap).copy()
+        cmap.set_under(color='white')
+        cmap.set_over(color='black')
+
+    edge_x, edge_y, edge_z, mean_x, mean_y, mean_z, diff_x, diff_y, diff_z, avg_x = join_windows_paths(windows, sample_distance, detector_distance, gain, loss, max_x)
+    all_z = np.concatenate([edge_z, mean_z, diff_z]).flatten()
+    min_z = np.min(all_z[all_z > 0])
+    max_z = np.max(all_z[np.isfinite(all_z)])
+    norm = matplotlib.pyplot.Normalize(min_z, max_z)
+
+    if ax is None:
+        ax = matplotlib.pyplot.gca()
+
+    #colorline(mean_x, mean_y, mean_z, cmap=cmap, norm=norm, linewidth=linewidth, ax=ax, expand=None)
+    colorline(edge_x, edge_y, edge_z, cmap=cmap, norm=norm, linewidth=linewidth, ax=ax, expand=None)
+    colorline(diff_x, diff_y, diff_z, cmap=cmap, norm=norm, linewidth=linewidth, ax=ax, expand=None)
+    return avg_x
+
+def plot_window(window, sample_distance, detector_distance, ax=None, gain=0.9, loss=0.9, color='b'):
+    import matplotlib.pyplot
+    if ax is None:
+        ax = matplotlib.pyplot.gca()
+
+    path_x, path_y, _, mean_x, mean_y, _, diff_x, diff_y, _= window_paths(window, sample_distance, detector_distance, gain, loss)
+
+    # draw the full window
+    ax.plot(path_x, path_y, color='k')
+    # draw the average path
+    ax.plot(mean_x, mean_y, color=color)
+    # draw the energy transfer window
+    ax.plot(diff_x, diff_y, color='r')
+
+    return detector_mean_t
 
 def wrap_attributes(obj, inval, allowed_var_names):
     for key in allowed_var_names:
@@ -286,7 +462,8 @@ class ChopperSystem(object):
         if frequency:
             freq_stash = self.freq
             self.setFrequency(frequency)
-        eis, _,  _, lines, chop_times = tuple(self._MulpyRepDriver(Ei_in, calc_res=False))
+        # eis, _,  _, lines, chop_times = tuple(self._MulpyRepDriver(Ei_in, calc_res=False))
+        eis, lines, chop_times = self._NewMulpyRepDriver(Ei_in)
         if frequency:
             self.setFrequency(freq_stash)
         d_sample = self.distance[-1] + self.chop_sam
@@ -300,40 +477,26 @@ class ChopperSystem(object):
         t_range = [-source_period_us, max_time]
         # plot the chopper blocked (black) and open (white) times
         for t_chopper_windows, d_chopper in zip(chop_times, self.distance):
-            plt.plot(t_range, [d_chopper]*2, color='black', linewidth=1.)
-            for t_open_close in t_chopper_windows:
-                plt.plot(t_open_close, [d_chopper]*2, color='white', linewidth=1.)
-        for ei, line in zip(eis, lines):
-            # the time at which this neutron path leaves the moderator:
-            t_moderator = (-line[0][1]/line[0][0] - line[1][1]/line[1][0])/2.0
-            if np.abs(t_moderator) > self.emission_time and first_rep:
-                continue
-            # the time at which this neutron path arrives at the sample:
-            t_sample = ((d_sample-line[0][1])/line[0][0] + (d_sample-line[1][1])/line[1][0])/2.0
-            # the time at which this neutron path arrives at the detector bank
-            t_detector = ((d_detector - line[0][1])/line[0][0] + (d_detector-line[1][1])/line[1][0])/2.0
-            # the slope (speed) of the full moderator to detector path
-            path_vel = d_detector/(t_detector-t_moderator)
-            gain_vel = path_vel * np.sqrt(1 + self.gain_ei_frac)
-            loss_vel = path_vel * np.sqrt(1 - self.loss_ei_frac)
-            # time at which the energy gain neutron path arrives at the detector bank:
-            t_detector_gain = (d_detector-d_sample)/gain_vel + t_sample
-            # time at which the energy loss neutron path arrives at the detector bank:
-            t_detector_loss = (d_detector-d_sample)/loss_vel + t_sample
-            # pick the plotting color for the elastic line:
-            main_color = 'm' if np.abs(t_moderator) > self.emission_time else 'b'
-            # draw the line from the moderator to the sample:
-            plt.plot([t_moderator, t_sample], [0, d_sample], color=main_color)
-            # and its continuation to the detector bank
-            plt.plot([t_sample, t_detector], [d_sample, d_detector], color=main_color)
-            # draw the energy-gain (Ef > Ei -> E < 0) path
-            plt.plot([t_sample, t_detector_gain], [d_sample, d_detector], color='r')
-            # draw the energy-loss (Ef < Ei -> E > 0) path
-            plt.plot([t_sample, t_detector_loss], [d_sample, d_detector], color='r')
-            # indicate the incident energy on the plot above the detector line:
-            plt.text(t_detector, d_detector+0.2, '{:3.1f}'.format(ei))
-        # plot the detector
-        plt.plot(t_range, [d_detector, d_detector], color='black')
+            n = len(t_chopper_windows)
+            x = np.array(t_chopper_windows).flatten()
+            y = np.tile(np.array([d_chopper]*4), (n, 1)).flatten()
+            z = np.tile(np.array((0, 1, 1, 0)), (n, 1)).flatten()
+            if x[0] > t_range[0]:
+                x = np.append(t_range[0], x)
+                y = np.append(y[0], y)
+                z = np.append(z[0], z)
+            if x[-1] < t_range[1]:
+                x = np.append(x, t_range[1])
+                y = np.append(y, y[-1])
+                z = np.append(z, z[-1])
+            colorline(x, y, z, ax=plt, expand=20)
+        t_detectors = plot_windows(lines, d_sample, d_detector, ax=plt, gain=self.gain_ei_frac, loss=self.loss_ei_frac,
+                                   max_x= self.emission_time if first_rep else np.inf)
+        # indicate the average incident energy on the plot above the detector line:
+        for ei, t_detector in zip(eis, t_detectors):
+            plt.text(t_detector, d_detector+0.5, '{:4.2f}'.format(ei))
+        # # plot the detector
+        plt.plot(t_range, [d_detector]*2, color='black')
         if h_plt is None:
             plt.xlim(0, max_time)
             plt.xlabel(r'TOF ($\mu$sec)')
@@ -412,6 +575,19 @@ class ChopperSystem(object):
             return res_el, percent, chop_width, mod_width
         else:
             return [Eis, chop_times, lastChopDist, lines, all_times]
+
+    def _NewMulpyRepDriver(self, Ei_in=None):
+        """Private method to calculate resolution for given Ei from chopper opening times"""
+        incident_energy = _check_input(self, Ei_in)
+        if not hasattr(self, '_new_saved_state') or (self._new_saved_state[0] != self._get_state(incident_energy)):
+            eis, all_times, chop_times, last_chop_dist, lines = MulpyRep.newCalcChopTimes(incident_energy, self._long_frequency, self._instpar, self.phase, self.slot)
+            # eis, lines = self._removeLowIntensityReps(eis, lines, incident_energy)
+            self._new_saved_state = self._get_state(incident_energy), eis, chop_times, last_chop_dist, lines, all_times
+        else:
+            eis, chop_times, last_chop_dist, lines, all_times = self._new_saved_state[1:]
+
+        return eis, lines, all_times
+
 
     def _ChopDriver(self, Ei_in=None, squared=False):
         """Private method to calculate resolution for given Ei from Fermi chopper"""

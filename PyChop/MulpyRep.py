@@ -47,6 +47,33 @@ def findLine(chop_times, chopDist, moderator_limits):
             lines.append([[leftM, leftC], [rightM, rightC]])
     return lines
 
+def newFindLine(chop_times, chopDist, moderator_limits):
+    """
+    Calculates the lines on the limit of each chopper
+
+    newFindline(chop_times, chopDist, moderator_limits)
+
+    chop_times: a list of the opening and closing times of the chopper within the time frame
+    chopDist: a list of the distance from moderator to chopper in meters
+    moderator_limits: the earliest and latest times that neutrons can leave the the moderator in microseconds
+
+    returns:
+        the slope and t=0 intercept for any causally consistent bounding neutron paths
+        of the form
+            d(t) = v * t + d(0)
+        as a list of two-element lists with two elements:
+        [ [[v, d(0)]_left, [v, d(0)]_right]_0, [[v, d(0)]_left, [v, d(0)]_right]_1, ... ]
+    """
+    lines = []
+    for chop in chop_times:
+        l_m = (-chopDist) / (moderator_limits[0] - chop[0])
+        r_m = (-chopDist) / (moderator_limits[-1] - chop[-1])
+        if l_m > 0 and r_m > 0:
+            l_c = -l_m * moderator_limits[0]
+            r_c = -r_m * moderator_limits[-1]
+            lines.append([[l_m, l_c], [r_m, r_c]])
+    return lines
+
 
 def checkPath(chop_times, lines, chopDist, chop5Dist):
     """
@@ -90,6 +117,54 @@ def checkPath(chop_times, lines, chopDist, chop5Dist):
                 leftC = chop5Dist - leftM*chop5_open
                 newLines.append([[leftM, leftC], line[1]])
     return newLines
+
+
+def newCheckPath(chop_times, lines, chop_dist, mono_dist):
+    """
+    A recursive function to check for lines which can satisfy a window in the next chopper
+    """
+    if len(chop_times) > 1:
+        # recursive bit
+        lines = newCheckPath(chop_times[1:], lines, chop_dist[1:], mono_dist)
+    new_lines = []
+    for line in lines:
+        l0_m = line[0][0]
+        l0_c = line[0][1]
+        l1_m = line[1][0]
+        l1_c = line[1][1]
+        # for each line check to see if there is an opening in the right time window
+        # fast first
+        early = (chop_dist[0] - l0_c) / l0_m
+        # then slow
+        late = (chop_dist[0] - l1_c) / l1_m
+
+        # then compare this time window to when this chopper is open, keep the range if it is possible
+        for chop in chop_times[0]:
+            if chop[0] < early and chop[-1] > late:
+                # the chopper window is larger than the maximum possible spread, so the line is unchanged
+                new_lines.append(line)
+            elif chop[0] > early and chop[-1] < late:
+                # both are within the window, draw a new box
+                mono_open = (mono_dist - l0_c) / l0_m
+                l_m = (chop_dist[0] - mono_dist) / (chop[0] - mono_open)
+                l_c = mono_dist - l_m*mono_open
+                mono_close = (mono_dist - l1_c) / l1_m
+                r_m = (chop_dist[0] - mono_dist) / (chop[-1] - mono_close)
+                r_c = mono_dist - r_m*mono_close
+                new_lines.append([[l_m, l_c], [r_m, r_c]])
+            elif late > chop[-1] > early > chop[0]:
+                # the leftmost range is fine but the rightmost is outside of the window. Redefine it
+                mono_close = (mono_dist - l1_c) / l1_m
+                r_m = (chop_dist[0] - mono_dist) / (chop[-1] - mono_close)
+                r_c = mono_dist - r_m * mono_close
+                new_lines.append([line[0], [r_m, r_c]])
+            elif early < chop[0] < late < chop[-1]:
+                # the rightmost range is fine but the leftmost is outside of the window. Redefine it
+                mono_open = (mono_dist - l0_c) / l0_m
+                l_m = (chop_dist[0] - mono_dist) / (chop[0] - mono_open)
+                l_c = mono_dist - l_m * mono_open
+                new_lines.append([[l_m, l_c], line[1]])
+    return new_lines
 
 
 def calcEnergy(lines, samDist):
@@ -284,3 +359,113 @@ def calcChopTimes(efocus, frequencies, instrumentpars, chopper_phases, chopper_s
     # ok, now we know the possible neutron velocities. we now need their energies
     Ei = calcEnergy(lines_all, (distance_per_chopper[-1]+chop_samp))
     return Ei, all_chopper_times, [all_chopper_times[0][0], all_chopper_times[-1][0]], distance_per_chopper[-1]-distance_per_chopper[0], lines_all
+
+
+def newCalcChopTimes(efocus, frequencies, instrumentpars, chopper_phases, chopper_slots):
+    """
+    A method to calculate the various possible incident energies with a given chopper setup on a multi-chopper
+    instrument like LET.
+    efocus: The incident energy that all choppers are focussed on
+    frequencies: The rotation frequency of each chopper
+    instrumentpars: a list of instrument parameters [see Instruments.py]
+    phase_slot_none: for every chopper one of {phase: float, slot: string, none: None} representing the phase offset,
+                     the slot number to pass through, or neither for each chopper.
+
+    Original Matlab code R. Bewley STFC
+    Rewritten in Python, D Voneshen STFC 2015
+    Updated to remove unnecessary code paths, G S Tucker ESS 2021
+    """
+    # conversion factors
+    lam2TOF = 252.7784            # the conversion from wavelength to TOF at 1m, multiply by distance
+    uSec = 1e6                    # seconds to microseconds
+    lam = np.sqrt(81.8042/efocus) # convert from energy to wavelength
+
+    # extracts the instrument parameters
+    distance_per_chopper, n_slots_per_chopper, slot_angle_centers_per_chopper = tuple(instrumentpars[:3])
+    # slot_width, guide_width, radius, numDisk, samp_det = tuple(instrumentpars[3:8])
+    chop_samp, rep_pack, latest_moderator_emission_time = tuple(instrumentpars[8:11])
+    # frac_ei = instrumentpars[11]
+    phase_chopper_to = instrumentpars[12]
+
+    all_chopper_times = [[] for _ in distance_per_chopper] # *unique* empty lists to hold each chopper opening period
+    n_choppers = len(distance_per_chopper)
+
+    # Ensure provided independent chopper index(es) match the number of independent phase/slot information
+    if not hasattr(phase_chopper_to, '__len__'):
+        phase_chopper_to = [phase_chopper_to]
+    if not hasattr(chopper_phases, '__len__'):
+        chopper_phases = [chopper_phases]
+    if not hasattr(chopper_slots, '__len__'):
+        chopper_slots = [chopper_slots]
+    if not (len(chopper_phases) == n_choppers and len(chopper_slots) == n_choppers and len(phase_chopper_to) == n_choppers):
+        raise RuntimeError('The independent chopper and phase/slot information must match the number of choppers!')
+    # remove any passed None values from the phases and slot indices
+    phase_to_source = ['source' in pct for pct in phase_chopper_to]
+    phase_to_first = ['first' in pct for pct in phase_chopper_to]
+    chopper_phases = [p if p else 0. for p in chopper_phases]
+    chopper_slots = [s % n if s else 0 for s, n in zip(chopper_slots, n_slots_per_chopper)]
+
+    # do we want multiple frames?
+    source_rep, nframe = tuple(rep_pack[:2]) if (hasattr(rep_pack, '__len__') and len(rep_pack) > 1) else (rep_pack, 1)
+    p_frames = source_rep / nframe
+    maximum_t = uSec * nframe / source_rep
+
+    # protect against slot_angle_centers_per_chopper being None or [..., None, ...]
+    if not slot_angle_centers_per_chopper:
+        slot_angle_centers_per_chopper = [np.linspace(0, 360*(n-1)/n, n) for n in n_slots_per_chopper]
+    else:
+        for i, n in enumerate(n_slots_per_chopper):
+            if not slot_angle_centers_per_chopper[i]:
+                slot_angle_centers_per_chopper[i] = np.linspace(0, 360*(n-1)/n, n)
+
+    chopper_it = zip(phase_to_source, phase_to_first, chopper_phases, chopper_slots, frequencies, all_chopper_times,
+                     distance_per_chopper, slot_angle_centers_per_chopper, *tuple(instrumentpars[3:7]))
+    for p2s, p2f, phase, slot, freq, times, distance, slot_centers, slot_width, guide_width, radius, n_disks in chopper_it:
+        # the effective chopper edge velocity (double disks are effectively twice as fast)
+        edge_velocity = 2*np.pi * radius * n_disks * freq
+        # the duration over which the chopper is open
+        x_states = (0, guide_width, slot_width, guide_width+slot_width)
+        # y_states = (0, 1, 1, 0)  # the transmission profile trapezoidal function __/---\__
+        t_states = np.array(x_states) * uSec/edge_velocity
+        # If this chopper is phased to source, the phase is relative to t=0. Otherwise it is relative to the chopper
+        # midpoint at the time-of-flight for the focus wavelength arriving at the chopper
+        t_reference = 0. if p2s else (lam2TOF * lam * distance - t_states[-1]/2)
+        if p2f:
+            t_reference += (t_states[2] - t_states[1])/2.
+        # we then adjust the opening and closing time of the chopper by the reference time and the desired phase
+        t_states += t_reference + phase
+        # the full chopper rotation period:
+        period = uSec/freq
+        # find the mid-slot position for each slot, in units of rotations
+        rel_pos = np.array(slot_centers) / 360
+        # we start with the selected slot and move a partial rotation between slots:
+        slot_part_rot = (rel_pos - rel_pos[slot]) % 1
+        # make sure we rotate forwards in time far enough to pass t == maximum_t:
+        n_rot_fwd = np.ceil(freq / p_frames - np.min(slot_part_rot) - np.min(t_states)/period)
+        # make sure we rotate backwards in time far enough to pass t == 0:
+        n_rot_bck = np.ceil(np.max(slot_part_rot)+np.max(t_states)/period)
+        # collect all slot rotations during the full period
+        all_rot = (np.arange(-n_rot_bck, n_rot_fwd+1)[:, np.newaxis] + slot_part_rot).flatten()
+        # all chopper windows:
+        windows = t_states + period * all_rot[:, np.newaxis]
+        # keep only windows which close after the frame starts and open before the full-period ends
+        times[:] = windows[(windows[:, 0] < maximum_t) & (windows[:, -1] > 0)]
+    # then we look for what else gets through
+    # firstly calculate the bounding box for each window in final chopper
+    lines_all = []
+    fully_open = []
+    for i in range(nframe):
+        t0 = i * uSec / source_rep
+        # including opening and closing times
+        lines = newFindLine(all_chopper_times[-1], distance_per_chopper[-1], [t0, t0+latest_moderator_emission_time])
+        lines = newCheckPath([np.array(ct)+t0 for ct in all_chopper_times[0:-1]], lines, distance_per_chopper[:-1], distance_per_chopper[-1])
+        if lines:
+            for line in lines:
+                lines_all.append(line)
+
+    # ok, now we know the possible neutron velocities. we now need their energies
+    Ei = calcEnergy(lines_all, (distance_per_chopper[-1]+chop_samp))
+    return Ei, \
+           all_chopper_times, [all_chopper_times[0][0], all_chopper_times[-1][0]], \
+           distance_per_chopper[-1]-distance_per_chopper[0],\
+           lines_all
